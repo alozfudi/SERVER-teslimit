@@ -10,7 +10,8 @@ from datetime import datetime, timedelta
 import urllib.parse
 from pathlib import Path
 
-# --- AUTO INSTALL REQUIRED PACKAGES ---
+# --- 1. AUTO INSTALL REQUIRED PACKAGES ---
+# Fungsi ini akan otomatis menginstall library yang kurang saat aplikasi dijalankan
 def install_package(package):
     try:
         __import__(package)
@@ -19,14 +20,14 @@ def install_package(package):
 
 try:
     import streamlit as st
-    import psutil
-    import requests
-    import gdown  # <--- LIBRARY BARU KHUSUS GOOGLE DRIVE
+    import psutil   # Untuk monitoring RAM
+    import requests # Untuk download file biasa
+    import gdown    # KHUSUS GOOGLE DRIVE (PENTING!)
 except ImportError:
     install_package("streamlit")
     install_package("psutil")
     install_package("requests")
-    install_package("gdown") # Install gdown otomatis
+    install_package("gdown") 
     import streamlit as st
     import psutil
     import requests
@@ -57,13 +58,15 @@ PREDEFINED_OAUTH_CONFIG = {
     }
 }
 
-# --- DATABASE FUNCTIONS ---
+# --- 2. DATABASE FUNCTIONS ---
 def init_database():
+    """Initialize SQLite database for persistent logs"""
     try:
         db_path = Path("streaming_logs.db")
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
+        # Create logs table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS streaming_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,6 +80,7 @@ def init_database():
             )
         ''')
         
+        # Create streaming_sessions table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS streaming_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +99,7 @@ def init_database():
             )
         ''')
         
+        # Create saved_channels table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS saved_channels (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,7 +196,7 @@ def save_streaming_session(session_id, video_file, stream_title, stream_descript
     except Exception as e:
         st.error(f"Error saving session: {e}")
 
-# --- GOOGLE AUTH FUNCTIONS ---
+# --- 3. GOOGLE AUTH & YOUTUBE API FUNCTIONS ---
 def load_google_oauth_config(json_file):
     try:
         config = json.load(json_file)
@@ -251,7 +256,6 @@ def get_channel_info(service):
         st.error(f"Error fetching channel: {e}")
         return []
 
-# --- YOUTUBE LIVE FUNCTIONS ---
 def get_stream_key_only(service):
     try:
         stream_request = service.liveStreams().insert(
@@ -341,33 +345,6 @@ def get_broadcast_stream_key(service, broadcast_id):
         st.error(f"Error fetching stream key: {e}")
         return None
 
-# --- FFMPEG STREAMING ---
-def run_ffmpeg(video_path, stream_key, is_shorts, log_callback, rtmp_url=None, session_id=None):
-    output_url = rtmp_url or f"rtmp://a.rtmp.youtube.com/live2/{stream_key}"
-    scale = "-vf scale=720:1280" if is_shorts else ""
-    cmd = [
-        "ffmpeg", "-re", "-stream_loop", "-1", "-i", video_path,
-        "-c:v", "libx264", "-preset", "veryfast", "-b:v", "2500k", "-maxrate", "2500k", "-bufsize", "5000k",
-        "-g", "60", "-keyint_min", "60",
-        "-c:a", "aac", "-b:a", "128k", "-f", "flv"
-    ]
-    if scale: cmd += scale.split()
-    cmd.append(output_url)
-    
-    log_callback(f"🚀 Starting FFmpeg: {' '.join(cmd[:8])}...")
-    
-    try:
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        for line in process.stdout:
-            log_callback(line.strip())
-        process.wait()
-        log_callback("✅ Streaming completed")
-    except Exception as e:
-        log_callback(f"❌ FFmpeg Error: {e}")
-        if session_id: log_to_database(session_id, "ERROR", str(e))
-    finally:
-        log_callback("⏹️ Session ended")
-
 def auto_process_auth_code():
     query_params = st.query_params
     if 'code' in query_params:
@@ -407,7 +384,39 @@ def get_youtube_categories():
         "24": "Entertainment", "25": "News & Politics", "27": "Education", "28": "Science & Tech"
     }
 
-# --- MAIN APP ---
+# --- 4. FFMPEG STREAMING FUNCTION ---
+def run_ffmpeg(video_path, stream_key, is_shorts, log_callback, rtmp_url=None, session_id=None):
+    output_url = rtmp_url or f"rtmp://a.rtmp.youtube.com/live2/{stream_key}"
+    scale = "-vf scale=720:1280" if is_shorts else ""
+    cmd = [
+        "ffmpeg", "-re", "-stream_loop", "-1", "-i", video_path,
+        "-c:v", "libx264", "-preset", "veryfast", "-b:v", "2500k", "-maxrate", "2500k", "-bufsize", "5000k",
+        "-g", "60", "-keyint_min", "60",
+        "-c:a", "aac", "-b:a", "128k", "-f", "flv"
+    ]
+    if scale: cmd += scale.split()
+    cmd.append(output_url)
+    
+    start_msg = f"🚀 Starting FFmpeg for {video_path}..."
+    log_callback(start_msg)
+    if session_id: log_to_database(session_id, "INFO", start_msg)
+    
+    try:
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in process.stdout:
+            log_callback(line.strip())
+        process.wait()
+        end_msg = "✅ Streaming completed"
+        log_callback(end_msg)
+        if session_id: log_to_database(session_id, "INFO", end_msg)
+    except Exception as e:
+        err_msg = f"❌ FFmpeg Error: {e}"
+        log_callback(err_msg)
+        if session_id: log_to_database(session_id, "ERROR", err_msg)
+    finally:
+        log_callback("⏹️ Session ended")
+
+# --- 5. MAIN APP ---
 def main():
     st.set_page_config(page_title="Advanced YouTube Live", page_icon="📺", layout="wide")
     init_database()
@@ -418,9 +427,10 @@ def main():
         st.session_state['live_logs'] = []
 
     st.title("🎥 Advanced YouTube Live Streaming Platform")
+    st.markdown("---")
     auto_process_auth_code()
 
-    # --- SIDEBAR ---
+    # --- SIDEBAR (Monitoring & Config) ---
     with st.sidebar:
         st.header("📋 Configuration")
         
@@ -450,6 +460,8 @@ def main():
                         st.rerun()
                     else:
                         st.error("Auth Expired")
+        else:
+            st.info("No saved channels.")
 
         # AUTH SETUP
         st.subheader("🔐 Auth Setup")
@@ -475,117 +487,128 @@ def main():
     with col1:
         st.header("1. Video Source")
         
-        # FILE SELECTOR
+        # FILE SELECTOR (Local)
         video_files = [f for f in os.listdir('.') if f.endswith(('.mp4', '.mkv', '.avi', '.mov'))]
         selected_video = st.selectbox("Select Local File", ["-- Select --"] + video_files)
         
-        # SMART DOWNLOADER (GOOGLE DRIVE GDOWN SUPPORT)
+        # --- SMART DOWNLOADER (GOOGLE DRIVE GDOWN SUPPORT) ---
         st.markdown("---")
         st.write("🔗 **Smart Downloader (Support Google Drive 1GB+):**")
-        st.caption("Menggunakan library 'gdown' untuk menembus limitasi Google Drive.")
-        url_input = st.text_input("Paste URL (Direct Link / GDrive)", key="dl_url")
+        st.caption("Solusi file besar: Masukkan Link Google Drive (Permission: 'Anyone with the link') atau Direct Link.")
+        
+        url_input = st.text_input("Paste URL Here", key="dl_url")
         
         if st.button("⬇️ Download ke Server"):
             if url_input:
                 try:
-                    with st.spinner("⏳ Menggunakan gdown untuk download file besar..."):
-                        save_path = "downloaded_video.mp4"
+                    save_path = "downloaded_video.mp4"
+                    with st.spinner("⏳ Sedang memproses download..."):
                         
-                        # Cek Google Drive
+                        # 1. Cek Apakah Google Drive
                         gdrive_match = re.search(r'drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)', url_input)
                         
                         if gdrive_match:
+                            # --- LOGIC GDOWN (Fix 0.06MB) ---
                             file_id = gdrive_match.group(1)
-                            st.info(f"🔍 Google Drive ID Detected: {file_id}")
+                            st.info(f"🔍 Google Drive Detected (ID: {file_id})")
                             
-                            # MENGGUNAKAN GDOWN (SOLUSI FIX)
-                            # Remove file lama jika ada
-                            if os.path.exists(save_path):
-                                os.remove(save_path)
-                                
+                            # Hapus file lama jika ada
+                            if os.path.exists(save_path): os.remove(save_path)
+                            
+                            # Download pakai gdown
                             url = f'https://drive.google.com/uc?id={file_id}'
-                            output = save_path
-                            gdown.download(url, output, quiet=False, fuzzy=True)
+                            gdown.download(url, save_path, quiet=False, fuzzy=True)
                             
                         else:
-                            # Direct link biasa
-                            import requests
+                            # --- LOGIC DIRECT LINK BIASA ---
                             response = requests.get(url_input, stream=True)
-                            with open(save_path, 'wb') as f:
-                                for chunk in response.iter_content(chunk_size=1024*1024):
-                                    if chunk: f.write(chunk)
+                            if response.status_code == 200:
+                                with open(save_path, 'wb') as f:
+                                    for chunk in response.iter_content(chunk_size=1024*1024):
+                                        if chunk: f.write(chunk)
+                            else:
+                                st.error(f"Gagal koneksi: {response.status_code}")
+                    
+                    # Cek hasil download
+                    if os.path.exists(save_path):
+                        st.success("✅ Download Selesai!")
+                        st.rerun()
+                    else:
+                        st.error("❌ File gagal didownload.")
                         
-                        # Validasi File
-                        if os.path.exists(save_path):
-                            file_size_mb = os.path.getsize(save_path) / (1024 * 1024)
-                            st.success(f"✅ Download Sukses! Ukuran: {file_size_mb:.2f} MB")
-                            st.rerun()
-                        else:
-                            st.error("❌ Gagal download, file tidak ditemukan.")
-                            
                 except Exception as e:
                     st.error(f"Error: {e}")
 
-        # FILE UPLOAD (CHUNKED)
+        # --- MANUAL UPLOAD (CHUNKED) ---
         st.markdown("---")
-        uploaded_file = st.file_uploader("Upload File (Max 200MB - Manual Upload)", type=['mp4', 'mkv'])
+        st.write("📂 **Atau Upload Manual (Maks 200MB):**")
+        uploaded_file = st.file_uploader("Upload File", type=['mp4', 'mkv'], label_visibility="collapsed")
+        
         if uploaded_file:
-            with st.spinner("Saving..."):
+            with st.spinner("Saving uploaded file..."):
                 with open(uploaded_file.name, "wb") as f:
                     while True:
-                        chunk = uploaded_file.read(5*1024*1024)
+                        chunk = uploaded_file.read(5*1024*1024) # 5MB chunks
                         if not chunk: break
                         f.write(chunk)
-                st.success("Uploaded!")
+                st.success(f"✅ Uploaded: {uploaded_file.name}")
+                # Hapus file download lama agar tidak bingung
+                if os.path.exists("downloaded_video.mp4"): os.remove("downloaded_video.mp4")
                 st.rerun()
 
-        # DETERMINE ACTIVE VIDEO
+        # --- DETERMINING ACTIVE VIDEO & SIZE CHECK ---
         active_video = None
-        if selected_video != "-- Select --": active_video = selected_video
-        elif os.path.exists("downloaded_video.mp4"): active_video = "downloaded_video.mp4"
-        elif uploaded_file: active_video = uploaded_file.name
+        if selected_video != "-- Select --": 
+            active_video = selected_video
+        elif uploaded_file: 
+            active_video = uploaded_file.name
+        elif os.path.exists("downloaded_video.mp4"): 
+            active_video = "downloaded_video.mp4"
         
         if active_video:
             # Cek ukuran file
             if os.path.exists(active_video):
-                file_size_mb = os.path.getsize(active_video) / (1024 * 1024)
-                st.success(f"🎥 Active Video: **{active_video}** (Ukuran: {file_size_mb:.2f} MB)")
+                size_mb = os.path.getsize(active_video) / (1024*1024)
+                st.success(f"🎥 Active Video: **{active_video}** (Ukuran: {size_mb:.2f} MB)")
                 
-                if file_size_mb < 1:
-                    st.warning("⚠️ File terlalu kecil (<1MB). Pastikan link Google Drive diset ke 'Anyone with the link' (Publik).")
+                if size_mb < 1:
+                    st.warning("⚠️ File terlalu kecil (<1MB). Jika ini dari Google Drive, pastikan link-nya 'Anyone with the link' (Publik).")
             else:
-                st.success(f"🎥 Active Video: **{active_video}**")
+                 st.error(f"⚠️ File {active_video} hilang dari server.")
 
         # --- STREAM SETTINGS ---
         st.header("2. Stream Settings")
         if 'youtube_service' in st.session_state:
             ch = st.session_state['channel_info']
-            st.info(f"Connected: {ch['snippet']['title']}")
+            st.info(f"Connected to: **{ch['snippet']['title']}**")
             
-            s_title = st.text_input("Title", f"Live Stream {datetime.now().strftime('%H:%M')}")
-            s_desc = st.text_area("Description", "Powered by Streamlit")
             col_s1, col_s2 = st.columns(2)
             with col_s1:
+                s_title = st.text_input("Title", f"Live Stream {datetime.now().strftime('%d-%m %H:%M')}")
                 s_privacy = st.selectbox("Privacy", ["public", "unlisted", "private"])
             with col_s2:
                 cat_name = st.selectbox("Category", list(get_youtube_categories().values()), index=5)
+                made_for_kids = st.checkbox("Made for Kids")
             
-            if st.button("🚀 Create Live Stream", type="primary"):
+            s_desc = st.text_area("Description", "Live streaming powered by Streamlit Cloud")
+            
+            if st.button("🚀 Create Live Stream (YouTube Studio)", type="primary"):
                 if active_video:
-                    cat_id = [k for k, v in get_youtube_categories().items() if v == cat_name][0]
-                    live_info = create_live_stream(
-                        st.session_state['youtube_service'], s_title, s_desc, 
-                        datetime.now()+timedelta(seconds=30), [], cat_id, s_privacy, False
-                    )
-                    if live_info:
-                        st.session_state['live_info'] = live_info
-                        st.success("Broadcast Created!")
-                        st.rerun()
+                    with st.spinner("Creating broadcast..."):
+                        cat_id = [k for k, v in get_youtube_categories().items() if v == cat_name][0]
+                        live_info = create_live_stream(
+                            st.session_state['youtube_service'], s_title, s_desc, 
+                            datetime.now()+timedelta(seconds=30), [], cat_id, s_privacy, made_for_kids
+                        )
+                        if live_info:
+                            st.session_state['live_info'] = live_info
+                            st.success("Broadcast Created!")
+                            st.rerun()
                 else:
-                    st.error("No Video Source Selected!")
+                    st.error("Pilih video terlebih dahulu!")
         else:
-            st.warning("Please Authenticate First")
-            manual_key = st.text_input("Or Manual Stream Key", type="password")
+            st.warning("⚠️ Please Authenticate with Google First")
+            manual_key = st.text_input("Or Enter Manual Stream Key", type="password")
             if manual_key: st.session_state['manual_key'] = manual_key
 
     # --- CONTROLS ---
@@ -595,11 +618,12 @@ def main():
         stream_key = None
         rtmp_url = None
         
+        # Priority: Live Info > Manual Key
         if 'live_info' in st.session_state:
             info = st.session_state['live_info']
-            st.success("YouTube Live Ready")
-            st.write(f"[Watch Link]({info['watch_url']})")
-            st.write(f"[Studio Link]({info['studio_url']})")
+            st.success("✅ YouTube Live Ready")
+            st.write(f"[📺 Watch Link]({info['watch_url']})")
+            st.write(f"[🎛️ Studio Link]({info['studio_url']})")
             stream_key = info['stream_key']
             rtmp_url = info['stream_url']
         elif 'manual_key' in st.session_state:
@@ -609,6 +633,12 @@ def main():
         
         if is_streaming:
             st.error("🔴 STREAMING ACTIVE")
+            
+            # Duration timer
+            if 'stream_start_time' in st.session_state:
+                duration = datetime.now() - st.session_state['stream_start_time']
+                st.caption(f"Duration: {str(duration).split('.')[0]}")
+            
             if st.button("⏹️ STOP STREAM"):
                 st.session_state['is_streaming'] = False
                 os.system("pkill ffmpeg")
@@ -618,26 +648,38 @@ def main():
             if st.button("▶️ START STREAM"):
                 if active_video and stream_key:
                     st.session_state['is_streaming'] = True
+                    st.session_state['stream_start_time'] = datetime.now()
                     
                     def log_cb(msg):
                         if 'live_logs' not in st.session_state: st.session_state['live_logs'] = []
                         st.session_state['live_logs'].append(f"{datetime.now().strftime('%H:%M:%S')} {msg}")
                         if len(st.session_state['live_logs']) > 50: st.session_state['live_logs'].pop(0)
 
-                    t = threading.Thread(target=run_ffmpeg, args=(active_video, stream_key, False, log_cb, rtmp_url, st.session_state['session_id']))
+                    t = threading.Thread(
+                        target=run_ffmpeg, 
+                        args=(active_video, stream_key, False, log_cb, rtmp_url, st.session_state['session_id']),
+                        daemon=True
+                    )
                     t.start()
                     st.rerun()
                 else:
-                    st.error("Check Video or Stream Key")
+                    st.error("Check Video Source or Stream Key")
 
         # LOGS
         st.markdown("---")
         st.subheader("Logs")
         if 'live_logs' in st.session_state:
             st.text_area("FFmpeg Output", "\n".join(st.session_state['live_logs']), height=300)
+            
+            # Auto refresh checkbox
             if st.checkbox("Auto-refresh Logs", value=is_streaming):
                 time.sleep(2)
                 st.rerun()
+                
+        # Export Logs Button
+        if st.button("📥 Download Logs"):
+            logs = "\n".join(st.session_state.get('live_logs', []))
+            st.download_button("Save .txt", logs, "stream_logs.txt")
 
 if __name__ == '__main__':
     main()
