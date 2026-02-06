@@ -384,31 +384,54 @@ def get_youtube_categories():
         "24": "Entertainment", "25": "News & Politics", "27": "Education", "28": "Science & Tech"
     }
 
-# --- 4. FFMPEG STREAMING FUNCTION ---
+# --- 4. FFMPEG STREAMING FUNCTION (OPTIMIZED) ---
 def run_ffmpeg(video_path, stream_key, is_shorts, log_callback, rtmp_url=None, session_id=None):
     output_url = rtmp_url or f"rtmp://a.rtmp.youtube.com/live2/{stream_key}"
-    scale = "-vf scale=720:1280" if is_shorts else ""
+    
+    # KITA UBAH BAGIAN INI AGAR LEBIH RINGAN
+    # Menggunakan preset 'ultrafast' dan resolusi 720p agar CPU server tidak jebol
     cmd = [
         "ffmpeg", "-re", "-stream_loop", "-1", "-i", video_path,
-        "-c:v", "libx264", "-preset", "veryfast", "-b:v", "2500k", "-maxrate", "2500k", "-bufsize", "5000k",
-        "-g", "60", "-keyint_min", "60",
-        "-c:a", "aac", "-b:a", "128k", "-f", "flv"
+        "-c:v", "libx264", 
+        "-preset", "ultrafast",  # <-- KUNCI 1: Encoding super cepat
+        "-tune", "zerolatency",  # <-- KUNCI 2: Mengurangi delay
+        "-b:v", "2000k",         # Bitrate diturunkan sedikit agar stabil
+        "-maxrate", "2500k", 
+        "-bufsize", "5000k",
+        "-g", "60",              # Keyframe tiap 2 detik (Wajib buat YouTube)
+        "-keyint_min", "60",
+        "-c:a", "aac", 
+        "-b:a", "128k", 
+        "-ar", "44100",
+        "-f", "flv"
     ]
-    if scale: cmd += scale.split()
+    
+    # Jika Shorts, crop ke vertikal. Jika tidak, paksa ke 720p (Landscape)
+    if is_shorts:
+         cmd.extend(["-vf", "scale=-2:1280,crop=720:1280:0:0"]) # Paksa vertikal
+    else:
+         cmd.extend(["-vf", "scale=1280:-2"]) # Paksa 720p (Lebih ringan dari 1080p)
+
     cmd.append(output_url)
     
-    start_msg = f"🚀 Starting FFmpeg for {video_path}..."
+    start_msg = f"🚀 Starting Lightweight Stream for {video_path}..."
     log_callback(start_msg)
     if session_id: log_to_database(session_id, "INFO", start_msg)
     
     try:
+        # Tambahkan creationflags agar proses bisa dimatikan dengan bersih
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        
+        # Baca log baris per baris
         for line in process.stdout:
-            log_callback(line.strip())
+            # Filter log biar tidak terlalu spam di layar, tapi tetap tercatat
+            if "frame=" in line or "Error" in line: 
+                log_callback(line.strip())
+        
         process.wait()
-        end_msg = "✅ Streaming completed"
+        end_msg = "✅ Streaming completed/stopped"
         log_callback(end_msg)
-        if session_id: log_to_database(session_id, "INFO", end_msg)
+        
     except Exception as e:
         err_msg = f"❌ FFmpeg Error: {e}"
         log_callback(err_msg)
