@@ -5,7 +5,7 @@ import time
 import os
 import json
 import sqlite3
-import re  # Wajib untuk deteksi Google Drive ID
+import re 
 from datetime import datetime, timedelta
 import urllib.parse
 from pathlib import Path
@@ -19,15 +19,18 @@ def install_package(package):
 
 try:
     import streamlit as st
-    import psutil  # Untuk monitoring RAM
-    import requests # Untuk download file
+    import psutil
+    import requests
+    import gdown  # <--- LIBRARY BARU KHUSUS GOOGLE DRIVE
 except ImportError:
     install_package("streamlit")
     install_package("psutil")
     install_package("requests")
+    install_package("gdown") # Install gdown otomatis
     import streamlit as st
     import psutil
     import requests
+    import gdown
 
 try:
     import google.auth
@@ -56,7 +59,6 @@ PREDEFINED_OAUTH_CONFIG = {
 
 # --- DATABASE FUNCTIONS ---
 def init_database():
-    """Initialize SQLite database for persistent logs"""
     try:
         db_path = Path("streaming_logs.db")
         conn = sqlite3.connect(db_path)
@@ -160,7 +162,6 @@ def log_to_database(session_id, log_type, message, video_file=None, stream_key=N
         conn.commit()
         conn.close()
     except Exception as e:
-        # Avoid infinite loops if log fails
         print(f"Logging error: {e}")
 
 def get_logs_from_database(session_id=None, limit=100):
@@ -478,47 +479,50 @@ def main():
         video_files = [f for f in os.listdir('.') if f.endswith(('.mp4', '.mkv', '.avi', '.mov'))]
         selected_video = st.selectbox("Select Local File", ["-- Select --"] + video_files)
         
-        # SMART DOWNLOADER (GOOGLE DRIVE SUPPORT)
+        # SMART DOWNLOADER (GOOGLE DRIVE GDOWN SUPPORT)
         st.markdown("---")
         st.write("🔗 **Smart Downloader (Support Google Drive 1GB+):**")
+        st.caption("Menggunakan library 'gdown' untuk menembus limitasi Google Drive.")
         url_input = st.text_input("Paste URL (Direct Link / GDrive)", key="dl_url")
         
         if st.button("⬇️ Download ke Server"):
             if url_input:
                 try:
-                    with st.spinner("⏳ Analyzing link & Downloading..."):
-                        session = requests.Session()
+                    with st.spinner("⏳ Menggunakan gdown untuk download file besar..."):
+                        save_path = "downloaded_video.mp4"
+                        
                         # Cek Google Drive
                         gdrive_match = re.search(r'drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)', url_input)
                         
                         if gdrive_match:
                             file_id = gdrive_match.group(1)
-                            st.info(f"🔍 Google Drive Detected (ID: {file_id})")
-                            URL = "https://docs.google.com/uc?export=download"
-                            params = {'id': file_id}
-                            response = session.get(URL, params=params, stream=True)
+                            st.info(f"🔍 Google Drive ID Detected: {file_id}")
                             
-                            token = None
-                            for key, value in response.cookies.items():
-                                if key.startswith('download_warning'):
-                                    token = value
-                                    break
+                            # MENGGUNAKAN GDOWN (SOLUSI FIX)
+                            # Remove file lama jika ada
+                            if os.path.exists(save_path):
+                                os.remove(save_path)
+                                
+                            url = f'https://drive.google.com/uc?id={file_id}'
+                            output = save_path
+                            gdown.download(url, output, quiet=False, fuzzy=True)
                             
-                            if token:
-                                params['confirm'] = token
-                                response = session.get(URL, params=params, stream=True)
                         else:
-                            response = session.get(url_input, stream=True)
-                        
-                        if response.status_code == 200:
-                            save_path = "downloaded_video.mp4"
+                            # Direct link biasa
+                            import requests
+                            response = requests.get(url_input, stream=True)
                             with open(save_path, 'wb') as f:
                                 for chunk in response.iter_content(chunk_size=1024*1024):
                                     if chunk: f.write(chunk)
-                            st.success(f"✅ Downloaded: {os.path.getsize(save_path)/(1024*1024):.2f} MB")
+                        
+                        # Validasi File
+                        if os.path.exists(save_path):
+                            file_size_mb = os.path.getsize(save_path) / (1024 * 1024)
+                            st.success(f"✅ Download Sukses! Ukuran: {file_size_mb:.2f} MB")
                             st.rerun()
                         else:
-                            st.error(f"Failed: {response.status_code}")
+                            st.error("❌ Gagal download, file tidak ditemukan.")
+                            
                 except Exception as e:
                     st.error(f"Error: {e}")
 
@@ -542,14 +546,13 @@ def main():
         elif uploaded_file: active_video = uploaded_file.name
         
         if active_video:
-            # Cek ukuran file yang ada di server
+            # Cek ukuran file
             if os.path.exists(active_video):
                 file_size_mb = os.path.getsize(active_video) / (1024 * 1024)
                 st.success(f"🎥 Active Video: **{active_video}** (Ukuran: {file_size_mb:.2f} MB)")
                 
-                # Peringatan jika file terlalu kecil (masih html/error)
                 if file_size_mb < 1:
-                    st.warning("⚠️ File terlalu kecil (<1MB). Kemungkinan link Google Drive salah atau butuh akses publik.")
+                    st.warning("⚠️ File terlalu kecil (<1MB). Pastikan link Google Drive diset ke 'Anyone with the link' (Publik).")
             else:
                 st.success(f"🎥 Active Video: **{active_video}**")
 
