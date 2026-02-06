@@ -973,14 +973,46 @@ def main():
             st.info("No video files found in current directory")
         
         # Video upload (CHUNKED SAFE UPLOAD)
-        uploaded_file = st.file_uploader("Or upload new video", type=['mp4', '.flv', '.avi', '.mov', '.mkv'])
+        # --- A. Opsi Upload File (Untuk file kecil < 200MB) ---
+        uploaded_file = st.file_uploader("Upload video file (Max 200MB)", type=['mp4', '.flv', '.avi', '.mov', '.mkv'])
         
-        if uploaded_file:
-            # Menggunakan chunking agar RAM tidak meledak saat save file besar
-            with st.spinner(f"Processing large file ({uploaded_file.size / (1024*1024):.1f} MB)..."):
+        # --- B. Opsi URL (SOLUSI FILE BESAR 1.5GB) ---
+        st.markdown("---")
+        st.write("🔗 **Opsi Link URL (Gunakan ini untuk file besar):**")
+        st.caption("Solusi anti-crash: Masukkan direct link (Google Drive/Dropbox/Hosting) di sini.")
+        video_url = st.text_input("Paste Direct URL Video", key="url_input")
+        start_download = st.button("⬇️ Download ke Server")
+
+        # --- LOGIC PEMROSESAN VIDEO ---
+        # Prioritas 1: Jika user menekan tombol download URL
+        if start_download and video_url:
+            try:
+                with st.spinner("⏳ Sedang mendownload file besar ke server... (Mohon tunggu)"):
+                    # Gunakan stream=True agar RAM tidak meledak
+                    import requests
+                    r = requests.get(video_url, stream=True)
+                    if r.status_code == 200:
+                        video_path = "downloaded_video.mp4"
+                        with open(video_path, 'wb') as f:
+                            # Download per 1MB chunk
+                            for chunk in r.iter_content(chunk_size=1024*1024): 
+                                if chunk:
+                                    f.write(chunk)
+                        
+                        st.success(f"✅ Download Sukses! Ukuran: {os.path.getsize(video_path) / (1024*1024):.2f} MB")
+                        log_to_database(st.session_state['session_id'], "INFO", f"Video downloaded from URL: {video_url}")
+                    else:
+                        st.error(f"❌ Gagal download. Status: {r.status_code}")
+                        video_path = None
+            except Exception as e:
+                st.error(f"❌ Error URL: {e}")
+                video_path = None
+
+        # Prioritas 2: Jika user upload file manual (Chunked Upload)
+        elif uploaded_file:
+            with st.spinner(f"Processing upload ({uploaded_file.size / (1024*1024):.1f} MB)..."):
                 try:
                     with open(uploaded_file.name, "wb") as f:
-                        # Baca dan tulis per 10MB chunk
                         while True:
                             chunk = uploaded_file.read(10 * 1024 * 1024)
                             if not chunk:
@@ -990,14 +1022,14 @@ def main():
                     st.success("✅ Video uploaded successfully!")
                     video_path = uploaded_file.name
                     log_to_database(st.session_state['session_id'], "INFO", f"Video uploaded: {uploaded_file.name}")
-                    
                 except Exception as e:
-                    st.error(f"❌ Error saving file: {e}")
-                    log_to_database(st.session_state['session_id'], "ERROR", f"File upload failed: {e}")
+                    st.error(f"❌ Error upload: {e}")
                     video_path = None
 
+        # Prioritas 3: Jika user memilih file dari list yang sudah ada
         elif selected_video:
             video_path = selected_video
+            
         else:
             video_path = None
         
