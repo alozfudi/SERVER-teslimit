@@ -542,7 +542,16 @@ def main():
         elif uploaded_file: active_video = uploaded_file.name
         
         if active_video:
-            st.success(f"🎥 Active Video: **{active_video}**")
+            # Cek ukuran file yang ada di server
+            if os.path.exists(active_video):
+                file_size_mb = os.path.getsize(active_video) / (1024 * 1024)
+                st.success(f"🎥 Active Video: **{active_video}** (Ukuran: {file_size_mb:.2f} MB)")
+                
+                # Peringatan jika file terlalu kecil (masih html/error)
+                if file_size_mb < 1:
+                    st.warning("⚠️ File terlalu kecil (<1MB). Kemungkinan link Google Drive salah atau butuh akses publik.")
+            else:
+                st.success(f"🎥 Active Video: **{active_video}**")
 
         # --- STREAM SETTINGS ---
         st.header("2. Stream Settings")
