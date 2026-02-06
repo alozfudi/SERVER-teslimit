@@ -1,3 +1,4 @@
 [server]
-maxUploadSize = 4000
+maxUploadSize = 2000
+
 
